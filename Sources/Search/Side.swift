@@ -2260,10 +2260,17 @@ private struct SideRow: View, Equatable {
         .modifier(Shake(travel: shake))
         .modifier(Give(pressed: pressed && prefs.tabsGive))
         .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        .modifier(OneClick(double: false) {
+        // Peark: the pinned row you are on takes a double click, as a square
+        // does — back to its pinned page, or, there already, its address.
+        .modifier(OneClick(double: live && tab.pin != nil) {
             guard interactive, !selectedOnPress, TabClick.flags.intersection([.command, .shift, .option]).isEmpty else { return }
             browser.clearTabSelection()
-            if live { browser.beginTabEdit(tab) } else { browser.select(tab) }
+            if !live { return browser.select(tab) }
+            if tab.pin != nil, let home = tab.home, !Browser.samePage(home, tab.address) {
+                browser.goHome(tab)
+            } else {
+                browser.beginTabEdit(tab)
+            }
         })
         .modifier(ModifiedTabClick { if interactive && !editing { browser.extendTabSelection(to: tab, modifiers: $0) } })
         .modifier(OptionClick { if interactive && !editing { browser.optionClick(tab) } })
