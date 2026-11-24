@@ -359,7 +359,7 @@ enum SettingsIndex {
               keys: ["tabs.popupWindows"], words: ["popup", "pop-up", "window"]),
         .init(id: "tabs.sleep", group: "memory", icon: "moon.zzz",
               title: "Sleep tabs you aren't using", detail: "A resting tab lets its page go and comes back where you left it",
-              more: "Pinned tabs, sound, calls and anything typed stay awake. Right-click a site's card to keep it awake.",
+              more: "Pinned squares, sound, calls and anything typed stay awake; pinned rows sleep like other tabs. Right-click a site's card to keep it awake.",
               keys: ["tabs.sleep", SleepPace.key], words: ["memory", "discard", "suspend", "ram"], kind: .wide),
         .init(id: "tabs.sleep.dim", group: "memory", icon: "moon",
               title: "Dim sleeping tabs", detail: "A resting tab's title and icon fade until you go to it",

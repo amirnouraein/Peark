@@ -12,10 +12,11 @@ import WebKit
 // rebuilt underneath (see Tab.sleep).
 //
 // Some tabs never sleep, because waking them couldn't give back what they
-// were doing: the one on screen, pinned tabs (those are put down by hand,
+// were doing: the one on screen, pinned squares (those are put down by hand,
 // with ⌘W), a tab playing sound, on a call, sending a download, holding its
 // video out in the little window, or holding something typed and not sent.
-// A pin stays awake only in the space on screen: in a space you aren't in it
+// Pinned rows sleep like any tab (Peark). A square stays awake only in the
+// space on screen: in a space you aren't in it
 // sleeps after the same wait as the tabs beside it, unless its site may send
 // notifications, which a page asleep couldn't (#569). Five spaces of five
 // pins was twenty-five pages that never let go.
@@ -198,11 +199,12 @@ extension Browser {
         }
     }
 
-    /// Why a pin stays awake: always in the space on screen; in one you
-    /// aren't in, or with the last window closed, only while its site may
-    /// send notifications.
+    /// Why a pin stays awake: a square always in the space on screen; a
+    /// row pin, one in a space you aren't in, or any with the last window
+    /// closed, only while its site may send notifications.
     private func pinKept(_ tab: Tab) -> String? {
-        guard shut || parked.values.contains(where: { $0.tabs.contains { $0 === tab } }) else { return "pinned" }
+        let row = tab.listed && prefs.showsPinRows
+        guard row || shut || parked.values.contains(where: { $0.tabs.contains { $0 === tab } }) else { return "pinned" }
         return mayNotify(tab) ? "pinned, and its site may send notifications" : nil
     }
 
