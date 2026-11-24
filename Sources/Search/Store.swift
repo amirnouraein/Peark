@@ -98,7 +98,7 @@ enum Store {
     /// differ from stores made by identifier in how long extension workers
     /// are let live.
     static var ownContainer: Bool {
-        (Bundle.main.bundleIdentifier ?? "") != "com.officecommun.search"
+        (Bundle.main.bundleIdentifier ?? "") != "ai.faezeh.search"
     }
 
     /// The fixed identifiers of a test world's WebKit stores: 1 for websites,
@@ -123,7 +123,8 @@ enum Store {
     static let folder: URL = {
         let support = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let home = support.appendingPathComponent(world.map { "Search (\($0))" } ?? "Search", isDirectory: true)
+        // Peark: its own folder, not the one the installed Search uses.
+        let home = support.appendingPathComponent(world.map { "Search (\($0))" } ?? "Peark", isDirectory: true)
         if !testing {
             let old = support.appendingPathComponent("Office Browser", isDirectory: true)
             let files = FileManager.default

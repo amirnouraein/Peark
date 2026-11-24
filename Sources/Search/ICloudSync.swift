@@ -10,7 +10,7 @@ import Combine
 // are SYNC.md, here and in the Search-iOS repository, followed to the
 // letter: change it there and here, or not at all.
 //
-//   - CloudKit container iCloud.com.officecommun.search, the private
+//   - CloudKit container iCloud.ai.faezeh.search, the private
 //     database, one zone "Search", one record type "Item". CKSyncEngine.
 //   - A record's name says what it holds: device.<uuid> (one device's open
 //     tabs), pins.<space>, pinfolders.<space> (the folders a space's pinned
@@ -416,7 +416,7 @@ final class ICloudSync: ObservableObject {
         makeEngine: { owner, state in CloudKitEngine(owner: owner, state: state) }
     )
 
-    nonisolated static let containerID = "iCloud.com.officecommun.search"
+    nonisolated static let containerID = "iCloud.ai.faezeh.search"
     nonisolated static let zoneName = "Search"
     nonisolated static let recordType = "Item"
     nonisolated static let onKey = "icloud.sync"
