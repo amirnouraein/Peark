@@ -376,10 +376,18 @@ final class ApplePasswords: ObservableObject {
                 guard let client, let key else { return nil }
                 let reply = try await request(
                     AppleMessages.password(user: user, host: host, tab: number(of: tab), client: client, key: key), timeout: 120)
-                return try AppleMessages.readPassword(AppleMessages.readSealed(reply, client, key: key), user: user)
-                    .map { ($0.password, $0.sites) }
+                let answer = try AppleMessages.readSealed(reply, client, key: key)
+                let found = try AppleMessages.readPassword(answer, user: user)
+                // Peark: why no password came, never the password itself.
+                if found == nil {
+                    let pwd = (answer["Entries"] as? [[String: Any]])?.compactMap { $0["PWD"] as? String }
+                        .map { $0 == "Not Included" ? $0 : ($0.isEmpty ? "empty" : "present") } ?? []
+                    Self.log.notice("No password: STATUS \(String(describing: answer["STATUS"]), privacy: .public), PWD \(pwd, privacy: .public), keys \(answer.keys.sorted(), privacy: .public)")
+                }
+                return found.map { ($0.password, $0.sites) }
             }
         } catch {
+            Self.log.notice("Password request failed: \(String(describing: error), privacy: .public)")
             dropIfSessionLost(error)
             return nil
         }
