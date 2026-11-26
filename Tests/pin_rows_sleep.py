@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pinned rows sleep like other tabs; pinned squares stay awake (Peark).
+"""Pinned tabs, squares and rows, sleep like other tabs (Peark).
 
 Build first (./build.sh), then python3 Tests/pin_rows_sleep.py.
 """
@@ -20,7 +20,7 @@ def main():
         sv.cmd({"do": "pin", "id": row, "listed": True})
         sv.page("front")  # neither pin on screen
         said = sv.sp("sleep", id=square).get("sleepResult")
-        t.ok("a pinned square stays awake", said == "pinned", said)
+        t.ok("a pinned square sleeps", said == "asleep", said)
         said = sv.sp("sleep", id=row).get("sleepResult")
         t.ok("a pinned row sleeps", said == "asleep", said)
     finally:

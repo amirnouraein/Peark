@@ -12,14 +12,11 @@ import WebKit
 // rebuilt underneath (see Tab.sleep).
 //
 // Some tabs never sleep, because waking them couldn't give back what they
-// were doing: the one on screen, pinned squares (those are put down by hand,
-// with ⌘W), a tab playing sound, on a call, sending a download, holding its
-// video out in the little window, or holding something typed and not sent.
-// Pinned rows sleep like any tab (Peark). A square stays awake only in the
-// space on screen: in a space you aren't in it
-// sleeps after the same wait as the tabs beside it, unless its site may send
-// notifications, which a page asleep couldn't (#569). Five spaces of five
-// pins was twenty-five pages that never let go.
+// were doing: the one on screen, a tab playing sound, on a call, sending a
+// download, holding its video out in the little window, or holding something
+// typed and not sent. Pins, squares and rows alike, sleep like any tab
+// (Peark), unless their site may send notifications, which a page asleep
+// couldn't (#569).
 //
 // With the last window closed and the app still running, there is nothing
 // on screen to wait for: the tabs the same rules let go sleep at once (see
@@ -199,13 +196,10 @@ extension Browser {
         }
     }
 
-    /// Why a pin stays awake: a square always in the space on screen; a
-    /// row pin, one in a space you aren't in, or any with the last window
-    /// closed, only while its site may send notifications.
+    /// Why a pin stays awake (Peark): only while its site may send
+    /// notifications. Squares and rows otherwise sleep like any tab.
     private func pinKept(_ tab: Tab) -> String? {
-        let row = tab.listed && prefs.showsPinRows
-        guard row || shut || parked.values.contains(where: { $0.tabs.contains { $0 === tab } }) else { return "pinned" }
-        return mayNotify(tab) ? "pinned, and its site may send notifications" : nil
+        mayNotify(tab) ? "pinned, and its site may send notifications" : nil
     }
 
     /// Whether the site on the tab is allowed to send notifications (see
