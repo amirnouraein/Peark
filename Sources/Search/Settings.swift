@@ -16,6 +16,10 @@ struct SettingsPanel: View {
     var asked: String? = nil
     /// Words already in Find a setting when it opens (previews).
     var found: String? = nil
+    /// The Settings tab this is drawn in: what Find a setting holds is kept
+    /// for it, as only the tab on screen is drawn and going to another tab
+    /// took the panel, and the words, away (#1655).
+    var tabID: UUID? = nil
     @Environment(\.asTab) private var asTab
 
     @ObservedObject private var updater = Updater.shared
@@ -111,7 +115,16 @@ struct SettingsPanel: View {
             if asTab { tabbed } else { card }
         }
         .onChange(of: browser.settingsFind) { _, _ in finding = true }
-        .onAppear { if let found { query = found } }
+        // Find a setting takes the keys as Settings opens, as System
+        // Settings' search does: type a setting's name at once (#1611).
+        // A turn later, once the tab has taken the window's keys.
+        .onAppear {
+            if let found { query = found } else if let tabID, let kept = browser.settingsQueries[tabID] { query = kept }
+            DispatchQueue.main.async { finding = true }
+        }
+        .onChange(of: query) { _, words in
+            if let tabID { browser.settingsQueries[tabID] = words.isEmpty ? nil : words }
+        }
     }
 
     /// In a tab of its own (see InternalPages.swift): the sections down the
@@ -202,7 +215,7 @@ struct SettingsPanel: View {
     }
 
     /// Find a setting: the wash, the glass, ⌘F beside it until something
-    /// is typed. Escape empties it.
+    /// is typed. Escape empties it, and then lets go.
     private struct FindField: View {
         @Binding var text: String
         var focus: FocusState<Bool>.Binding
@@ -220,7 +233,9 @@ struct SettingsPanel: View {
                         .textFieldStyle(.plain)
                         .foregroundStyle(Palette.ink)
                         .focused(focus)
-                        .onExitCommand { text = "" }
+                        // Escape empties it; empty, it lets go of the keys,
+                        // for Tab and the arrows to move around Settings.
+                        .onExitCommand { if text.isEmpty { focus.wrappedValue = false } else { text = "" } }
                         .accessibilityLabel("Find a setting")
                 }
                 .font(.system(size: 12.5))
@@ -565,6 +580,8 @@ struct SettingsPanel: View {
             // Coming from another browser, now or any time later: the same
             // page as File › Bring Things Over… and the Welcome's.
             Pill("Bring Things Over…") { browser.lead(to: InternalPage(.importing)) }
+        case "general.exportSpaces":
+            Pill("Export Spaces…") { browser.exportSpaces() }
         case "sync":
             // On asks for the folder first; cancelled, it stays off.
             // Never with Sync with iCloud: the two would undo each other.
@@ -592,6 +609,7 @@ struct SettingsPanel: View {
         case "downloads.folder": Pill("Change…") { chooseFolder() }
         case "downloads.ask": Switch(on: $prefs.asksWhereToSave)
         case "downloads.button": Switch(on: $prefs.alwaysShowsDownloads)
+        case "downloads.screenshots": ScreenshotsSwitch(prefs: prefs)
         case "downloads.open":
             Picker("Open Downloads", selection: $prefs.downloadsOpening) {
                 ForEach(DownloadsOpening.allCases) { Text($0.title).tag($0) }
@@ -675,7 +693,6 @@ struct SettingsPanel: View {
         case "tabs.highContrast": Switch(on: $prefs.highContrastText)
         case "tabs.reading": Switch(on: $prefs.showsReading)
         case "tabs.pinCounts": Switch(on: $prefs.showsPinCounts)
-        case "fold.loadingLine": Switch(on: $prefs.showsLoadingLine)
         case "tabs.give": Switch(on: $prefs.tabsGive)
         case "bookmarks.bar": Switch(on: $prefs.bookmarksBar)
         case "bookmarks.iconsOnly": Switch(on: $prefs.bookmarksIconsOnly)
@@ -687,6 +704,7 @@ struct SettingsPanel: View {
             ))
         case "motion.light": Switch(on: $prefs.lightMotion)
         case "motion.instant": Switch(on: $prefs.instantMotion)
+        case "motion.downloads": Switch(on: $prefs.animatesDownloads)
         case "note.split": Always()
         default: EmptyView()
         }
@@ -708,6 +726,7 @@ struct SettingsPanel: View {
         case "tabs.keepWindow": Switch(on: $prefs.keepWindowAfterLast)
         case "tabs.closeGoesBack": Switch(on: $prefs.closeGoesBack)
         case "home.grid": Switch(on: $prefs.homeGrid)
+        case "home.tiles": Switch(on: $prefs.homeTiles)
         case "tabs.undoReopens": Switch(on: $prefs.undoReopensTab)
         case "tabs.switcherBehindFirst": Switch(on: $prefs.switcherBehindFirst)
         case "tabs.switcherLeavesOutPins": Switch(on: $prefs.switcherLeavesOutPins)
@@ -742,6 +761,7 @@ struct SettingsPanel: View {
             ))
         case "tabs.clickAddressOnly": Switch(on: $prefs.tabClickAddressOnly)
         case "tabs.clickKeepsName": Switch(on: $prefs.tabClickKeepsName)
+        case "tabs.clickRenames": Switch(on: $prefs.tabClickRenames)
         case "note.groups", "note.awake": Always()
         default: EmptyView()
         }
@@ -771,6 +791,7 @@ struct SettingsPanel: View {
             .pickerStyle(.menu)
             .fixedSize()
         case "search.suggest": Switch(on: $prefs.engineSuggests)
+        case "field.top": Switch(on: $prefs.returnTakesTop)
         case "search.keywords":
             if draft == nil {
                 Pill("Add") { draft = Keyword() }
@@ -793,6 +814,7 @@ struct SettingsPanel: View {
         case "float.minimize": Switch(on: $prefs.floatMinimizes)
         case "media.click": Switch(on: $prefs.waitsForPlay)
         case "video.keys": Switch(on: $prefs.videoKeys)
+        case "meet.pip": Switch(on: $prefs.meetPiP)
         case "fullscreen.escapeTwice": Switch(on: $prefs.escapeTwice)
         case "fullscreen.keepsWindow": Switch(on: $prefs.keepsWindow)
         case "translate.target":
@@ -803,6 +825,8 @@ struct SettingsPanel: View {
             Steps(stops: Preferences.zooms, value: $prefs.pageZoom, home: 1) { "\(Int(($0 * 100).rounded()))%" }
         case "pages.120": Segmented(options: FastPages.allCases.map { ($0, $0.title) }, selection: $prefs.fastPages)
         case "pages.capture": Switch(on: $prefs.capturesPages)
+        case "pages.capture.copyOnly": Switch(on: $prefs.copiesCapturesOnly)
+        case "hiding.shapes": Switch(on: $prefs.hidingShapes)
         case "sites.styles": SiteStylesControl(prefs: prefs)
         case "autocorrect": Switch(on: $prefs.autocorrect)
         case "inlinePredictions": Switch(on: $prefs.inlinePredictions)
@@ -838,11 +862,13 @@ struct SettingsPanel: View {
         case "links.ask": Switch(on: $prefs.asksSpaceForLinks)
         case "pins.keep": Switch(on: $prefs.pinsKeepSite)
         case "pins.list": Switch(on: $prefs.listsPins)
+        case "pins.preview": Switch(on: $prefs.pinPreviews)
         case "pins.folders": Switch(on: $prefs.pinFolders)
         case "pins.commandNewTab": Switch(on: $prefs.pinCommandOpensTab)
         case "pins.linksNewTab": Switch(on: $prefs.pinLinksOpenTabs)
         case "newtab.floating": Switch(on: $prefs.floatingNewTab)
         case "field.window": Switch(on: $prefs.fieldOnWindow)
+        case "field.hidesPage": Switch(on: $prefs.fieldHidesPage)
         case "newtab.recent": Switch(on: $prefs.recentInNewTab)
         case "newtab.arc": Switch(on: $prefs.arcTabPopup)
         case "commandbar": Switch(on: $prefs.commandBar)
@@ -906,6 +932,8 @@ struct SettingsPanel: View {
             .fixedSize()
         case "links.peek.stays": Switch(on: $prefs.peekStays)
         case "links.optionSplit": Switch(on: $prefs.optionClickSplits)
+        case "split.controls": Switch(on: $prefs.splitControls)
+        case "keys.backspaceBack": Switch(on: $prefs.backspaceGoesBack)
         case "autoscroll": Switch(on: $prefs.autoScroll)
         case "wheel.smooth": Switch(on: $prefs.wheelGlides)
         case "pages.bounce": Switch(on: $prefs.bounces)
@@ -919,6 +947,7 @@ struct SettingsPanel: View {
         case "updates.notice": Switch(on: $prefs.showsUpdateReady)
         case "about.feedback": Pill("Send Feedback") { Links.writeFeedback() }
         case "about.notes": Pill("What's New…") { browser.lead(to: InternalPage(.notes)) }
+        case "developer.local": Switch(on: $prefs.developerLocal)
         case "bench": Switch(on: $prefs.bench)
         case "agents": Switch(on: $prefs.agents)
         case "news.updates": OptInSettingsField(betaOnly: false) { _ = browser.open($0, foreground: true) }
@@ -1051,7 +1080,7 @@ struct SettingsPanel: View {
                 TextField("", text: Binding(
                     get: { current.template },
                     set: { draft?.template = $0 }
-                ), prompt: Text("address with %s for the words, e.g. youtube.com/results?search_query=%s").italic())
+                ), prompt: Text("e.g. https://youtube.com/results?search_query=%s").italic())
                 .textFieldStyle(.plain)
                 .onSubmit(saveDraft)
             }
@@ -1121,7 +1150,7 @@ struct SettingsPanel: View {
         let saved = Keyword(
             id: current.id,
             keyword: current.keyword.trimmingCharacters(in: .whitespacesAndNewlines),
-            template: current.template.trimmingCharacters(in: .whitespacesAndNewlines)
+            template: Keyword.address(current.template)
         )
         // One being changed keeps its place in the list.
         if let index = prefs.keywords.firstIndex(where: { $0.id == saved.id }) {
