@@ -300,7 +300,7 @@ struct ReadingFill: View {
 }
 
 @MainActor
-final class Tab: ObservableObject, Identifiable {
+final class Tab: ObservableObject, Identifiable, HandsKeysBack {
     let id = UUID()
 
     /// The page. Built the first time anyone asks for it, not when the tab
@@ -920,6 +920,9 @@ final class Tab: ObservableObject, Identifiable {
     /// what you were just reading is what you are most likely to want back.
     /// Written into the session, so a tab's time away counts across quits.
     private(set) var touched = Date()
+    /// Whether `touched` says a look at all: a tab made this run and never
+    /// looked at has only the time it was made there (see FolderPeek).
+    private(set) var looked = false
     /// When it was last let go of: unpinned, taken out of its group, its
     /// name taken away. Kept apart from `touched`, which says when you last
     /// looked, for ⌃Tab and for where ⌘W on a pin lands; letting go of a
@@ -1314,6 +1317,9 @@ final class Tab: ObservableObject, Identifiable {
         add(KeptScroll.script, .atDocumentStart, mainFrameOnly: true, in: Web.world)
         add(Veiling.picker, .atDocumentStart, mainFrameOnly: true, in: Web.world)
         add(PageDrafts.script, .atDocumentStart, mainFrameOnly: false, in: Web.world)
+        // Every frame: one that loaded while hidden takes the page's zoom
+        // once shown (see FrameZoom.swift).
+        add(FrameZoom.script, .atDocumentStart, mainFrameOnly: false, in: Web.world)
         // Every frame: one of the page's own origin offers its sign-in's
         // boxes the page's accounts; any other returns at once (see the
         // script's first lines).
@@ -2190,7 +2196,12 @@ final class Tab: ObservableObject, Identifiable {
         icon = nil
     }
 
-    func touch(at when: Date = Date()) { touched = when }
+    /// `looked`: false for a time that was no look, as a session keeps for
+    /// a pin never looked at.
+    func touch(at when: Date = Date(), looked: Bool = true) {
+        touched = when
+        if looked { self.looked = true }
+    }
 
     /// True when the web view holds nothing — never loaded, or emptied —
     /// while the tab still names a page. The white page, in other words.
@@ -2338,7 +2349,11 @@ final class Tab: ObservableObject, Identifiable {
         }
         quiet?.invalidate()
         quiet = nil
+        if on { MediaKeysKeeper.shared.played(self) }
         guard was, !on else { return }
+        // The tab that kept the keys while Search was in front gives them
+        // up: this one is paused last now (see MediaKeys.swift).
+        MediaKeysKeeper.shared.paused(self)?.handBack()
         quiet = Timer.scheduledTimer(withTimeInterval: MediaKeys.wait, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.hush() }
         }
@@ -2408,6 +2423,15 @@ final class Tab: ObservableObject, Identifiable {
     /// frame that played, so the Mac hands the media keys back.
     private func hush() {
         quiet = nil
+        guard !noisy, built != nil else { return }
+        // Paused last, with Search in front: it keeps the keys (idea 1350).
+        guard MediaKeysKeeper.shared.handsBack(self) else { return }
+        handBack()
+    }
+
+    /// The media keys given back now: what played here, paused, is muted
+    /// (MediaKeys.watch).
+    func handBack() {
         guard !noisy, let built else { return }
         built.evaluateJavaScript(MediaKeys.hush, in: nil, in: Web.world) { _ in }
         for frame in media.frames {
@@ -3222,6 +3246,30 @@ final class PageView: WKWebView {
 
     /// `load` now, or in its turn while the page is out of sight (LoadTurns).
     func inTurn(_ load: @escaping LoadTurns.Load) { LoadTurns.shared.start(self, load) }
+
+    /// WebKit draws the page in a view of its own, sized with this one, and
+    /// AppKit rounds a view it sizes to the screen's pixels as it is seen at
+    /// that moment. A peek is sized as it grows in, seen at 98%, so that view
+    /// stayed a fraction of a pixel off once the peek was full size, and the
+    /// page's text was soft until the window next changed size. Sized while
+    /// seen scaled, a view meant to fill this one, off by no more than that
+    /// rounding, is given this one's bounds, as at full size. Seen at its
+    /// own size, AppKit's rounding is kept: it puts a side of a split half a
+    /// point wide on whole pixels.
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        for view in subviews where view.autoresizingMask.contains([.width, .height]) && view.frame != bounds {
+            let off = [view.frame.minX - bounds.minX, view.frame.minY - bounds.minY,
+                       view.frame.maxX - bounds.maxX, view.frame.maxY - bounds.maxY]
+            if off.allSatisfy({ abs($0) < 1.5 }), seenScaled { view.frame = bounds }
+        }
+    }
+
+    /// Seen at another size than its own, as in a peek growing into place.
+    private var seenScaled: Bool {
+        let seen = convert(bounds, to: nil).size
+        return abs(seen.width - bounds.width) > 0.01 || abs(seen.height - bounds.height) > 0.01
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

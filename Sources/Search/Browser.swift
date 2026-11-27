@@ -403,6 +403,10 @@ final class Browser: NSObject, ObservableObject {
     /// ⌘S on its way to folding the column: the page already has the room,
     /// the column has not moved yet (see Browser.toggleFold).
     @Published var foldingAway = false
+    /// ⌘S folding the column away on glass: the column keeps the glass it
+    /// sat on until it has gone (see Browser.columnGlass, idea 1317).
+    @Published var leavingOnGlass = false
+    var leaveTicket = 0
     /// ⌘S taking the column to icons only or back (Preferences.shrinks):
     /// its width glides, and the other spaces' rows kept out of sight for a
     /// swipe (SideBar.others) are left out meanwhile (idea 927).
@@ -2035,6 +2039,14 @@ final class Browser: NSObject, ObservableObject {
         history.recent()
     }
 
+    /// Said when the History menu's last few places change. The menu alone
+    /// watches it (RecentlyVisited, in App.swift): passed on as the window's
+    /// own change, as it was, every page that finished loading drew the
+    /// whole window again, the menu bar and every row of the column with it
+    /// — on the main thread, while the new page's frames waited for it to
+    /// let them in (idea 1327, `python3 Tests/nav_click.py --tabs 150 --cost 10`).
+    let recentMenu = RecentMenu()
+
     // MARK: - the camera and the microphone
 
     /// A page asking to see or hear you, waiting for an answer. WebKit hands
@@ -3254,14 +3266,14 @@ final class Browser: NSObject, ObservableObject {
             folded = (record ?? Browsers.read().first)?.folded == true
         }
 
-        // The History menu lists the last few places, and the menu is drawn
-        // from this object's changes — so a change to those is passed on,
-        // from the history of whichever space is on screen.
+        // The History menu lists the last few places: a change to those is
+        // passed on to the menu, from the history of whichever space is on
+        // screen (see recentMenu).
         $spaceID
             .removeDuplicates()
             .map { Spaces.history(for: $0).recentChanges }
             .switchToLatest()
-            .sink { [weak self] in self?.objectWillChange.send() }
+            .sink { [weak self] in self?.recentMenu.objectWillChange.send() }
             .store(in: &bag)
 
         // A page's passkeys for under its field, arriving while the caret
@@ -4540,7 +4552,8 @@ final class Browser: NSObject, ObservableObject {
                 // Only with Same tabs in every window on: off, the file is
                 // what it always was.
                 twinID: prefs.mirrorsTabs && twinnable(tab) ? tab.twinID : nil,
-                lifted: liftedIDs.contains(tab.id) ? tab.id : nil
+                lifted: liftedIDs.contains(tab.id) ? tab.id : nil,
+                unseen: tab.pin != nil && !tab.looked && !visibleTabIDs.contains(tab.id) ? true : nil
             ))
         }
         // The tab you were on isn't kept — a private one: the one kept just
@@ -4879,6 +4892,16 @@ final class Browser: NSObject, ObservableObject {
         selectableTabs.filter { selectedTabIDs.contains($0.id) }
     }
 
+    /// What Tab › Pin Tab and Pin Tab as Row (and their keys) pin: the tab
+    /// in front, or, when it is one of several picked tabs that can all be
+    /// pinned, every one of them, as their right-click menu does (#1692).
+    func pinTargets() -> [Tab] {
+        guard let tab = active else { return [] }
+        guard tab.pin == nil, isPickedAmongOthers(tab) else { return [tab] }
+        let picked = pickedTabs
+        return picked.allSatisfy({ $0.pin == nil && $0.isWeb && !$0.shy }) ? picked : [tab]
+    }
+
     /// One of several picked: a press on it waits for the release, as a
     /// click, rather than bringing it forward as the button goes down (see
     /// TabPress), which would drop the others before the drag could take them.
@@ -5200,6 +5223,7 @@ final class Browser: NSObject, ObservableObject {
             typed = ""
             editing = true
             focusRequest += 1
+            ownBoxWatch = tab.id
             rememberSession()
             Extensions.shared.offerNewTabPage(into: tab)
             return
@@ -5237,6 +5261,57 @@ final class Browser: NSObject, ObservableObject {
         if #available(macOS 15.4, *) { Extensions.shared.offerNewTabPage(into: tab) }
     }
 
+    /// The extension's new tab page ⌘T just opened under the field, until
+    /// it has loaded: if it puts the caret in a box of its own as it does,
+    /// the field goes away and the keys are the page's (#1714).
+    private var ownBoxWatch: Tab.ID?
+
+    /// An extension's new tab page with a search box of its own, focused as
+    /// it loads (`autofocus`, or `focus()` from its script): the field over
+    /// it is put away, so what you type goes into the page's box, as before
+    /// 1.0.22. A page that focuses nothing keeps the field (#1627). Only
+    /// while the field is still up, empty, over that same tab: a key already
+    /// typed into the field, or another tab, and nothing changes. Asked as
+    /// it finishes loading and twice more within a second, for a page whose
+    /// script focuses its box a moment later.
+    private func watchOwnBox(_ tab: Tab, tries: Int = 3) {
+        guard ownBoxWatch == tab.id, activeID == tab.id, editing, typed.isEmpty,
+              let web = tab.built
+        else { ownBoxWatch = nil; return }
+        web.evaluateInSearch(Browser.ownBox) { [weak self, weak tab] value in
+            MainActor.assumeIsolated {
+                guard let self, let tab else { return }
+                guard self.ownBoxWatch == tab.id, self.activeID == tab.id, self.editing, self.typed.isEmpty
+                else { return }
+                if value as? Bool == true {
+                    self.ownBoxWatch = nil
+                    self.editing = false
+                } else if tries > 1 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self, weak tab] in
+                        guard let self, let tab else { return }
+                        self.watchOwnBox(tab, tries: tries - 1)
+                    }
+                } else {
+                    self.ownBoxWatch = nil
+                }
+            }
+        }
+    }
+
+    /// Whether the page's focus is in a box you type into: a text field,
+    /// a text area or an editable element, looked for through shadow roots.
+    static let ownBox = """
+    (function () {
+      var el = document.activeElement;
+      for (var i = 0; el && el.shadowRoot && el.shadowRoot.activeElement && i < 32; i++) el = el.shadowRoot.activeElement;
+      if (!el || el === document.body || el === document.documentElement) return false;
+      if (el.disabled || el.readOnly) return false;
+      if (el.isContentEditable || el.tagName === 'TEXTAREA') return true;
+      if (el.tagName !== 'INPUT') return false;
+      return ['', 'text', 'search', 'url', 'email', 'tel', 'number'].indexOf((el.getAttribute('type') || '').toLowerCase()) >= 0;
+    })()
+    """
+
     /// New Tab in Group, from a group's heading, as Chrome's: a new tab at
     /// the group's end, in front. With the floating field on, over a page,
     /// the field comes up instead and the tab Return makes goes there (see
@@ -5267,6 +5342,7 @@ final class Browser: NSObject, ObservableObject {
             tabs = placed
             // The field over the extension's page takes the keys (#1627).
             editing = true
+            ownBoxWatch = tab.id
         } else {
             tab = Tab(configuration: Web.configuration(space: spaceID))
             prepare(tab)
@@ -7391,7 +7467,7 @@ final class Browser: NSObject, ObservableObject {
             tab.restore(url: url, title: url == saved ? entry.title : url.host ?? "", name: entry.name,
                         state: url == saved ? entry.keepsake?.state : nil)
             // Never later than now: a clock set wrong once would keep the tab forever.
-            if let touched = entry.touched { tab.touch(at: min(touched, Date())) }
+            if let touched = entry.touched { tab.touch(at: min(touched, Date()), looked: entry.unseen != true) }
             tab.letGo = entry.letGo.map { min($0, Date()) }
             tab.muted = entry.muted
             tab.pin = entry.pin
@@ -8371,16 +8447,17 @@ final class Browser: NSObject, ObservableObject {
 
     /// What the site in the field was searched for before, newest first:
     /// read from the history once when the site goes in, not at every key.
+    /// Shortcuts on the same host can have different search templates.
     /// Never in a private tab, whose field says nothing of where you have been.
     private func searchedBefore(on site: SearchSite) -> [String] {
         guard active?.shy != true else { return [] }
-        if let pastSearches, pastSearches.site == site.id { return pastSearches.words }
+        if let pastSearches, pastSearches.template == site.template { return pastSearches.words }
         let host = site.host.split(separator: "/").first.map(String.init) ?? site.host
         let words = SiteSearch.pastSearches(on: site, in: history.everything(matching: host))
-        pastSearches = (site.id, words)
+        pastSearches = (site.template, words)
         return words
     }
-    private var pastSearches: (site: SearchSite.ID, words: [String])?
+    private var pastSearches: (template: String, words: [String])?
 
     private func askEngine() {
         guard let question = engineQuestion(for: typed) else {
@@ -8515,7 +8592,7 @@ final class Browser: NSObject, ObservableObject {
             else { return place }
             if site.template == engine, words.lowercased() == asked { return nil }
             // "naruto+vs" and "naruto%20vs" are two pages but one search.
-            guard seen.insert(site.host + " " + words.lowercased()).inserted else { return nil }
+            guard seen.insert(site.template + " " + words.lowercased()).inserted else { return nil }
             return Suggestion(key: words, title: site.name, url: place.url, kind: .searched)
         }
     }
@@ -10263,6 +10340,7 @@ extension Browser: WKNavigationDelegate, WKUIDelegate {
         // done, and it is shown.
         (webView as? PageView)?.showFirstFrame()
         guard let tab = anyTab(for: webView), let url = tab.address else { return }
+        if ownBoxWatch == tab.id { watchOwnBox(tab) }
         let typed = typedTo.removeValue(forKey: tab.id)
         tab.uncover()
         // And again once it has all come in, for a page that drew its look
@@ -10415,9 +10493,10 @@ extension Browser: WKDownloadDelegate {
         // failed as "Cannot create file" at zero KB. Asked where instead, as
         // with Ask where to save on: a folder picked there is one it may use.
         var askedInstead = false
-        if chosen == nil, !prefs.asksWhereToSave, let to = file, !Browser.canWrite(in: to.deletingLastPathComponent()) {
+        if chosen == nil, !prefs.asksWhereToSave, let to = file, !(Browser.checksFolderForTest ?? Browser.canWrite)(to.deletingLastPathComponent()) {
             file = askWhere(name)
             askedInstead = true
+            if let file { keepDownloadsFolder(file.deletingLastPathComponent(), for: to.deletingLastPathComponent()) }
         }
         guard let file else {
             if let ended = fetches.destinationCancelled(download) {
@@ -10432,6 +10511,7 @@ extension Browser: WKDownloadDelegate {
         // A retry is numbered afresh from the name asked for, or the one you
         // gave it: never from "report 2.pdf", whose own " 2" is not its name.
         if chosen == nil { fetches.entry(for: download)?.retryName = prefs.asksWhereToSave || askedInstead ? file.lastPathComponent : name }
+        if chosen == nil { fetches.entry(for: download)?.inDefaultFolder = !prefs.asksWhereToSave && !askedInstead }
         completionHandler(file)
         announce("Downloading \(file.lastPathComponent)")
     }
@@ -10529,9 +10609,18 @@ extension Browser: WKDownloadDelegate {
         return askWhere(name)
     }
 
+    /// Tests stand in for macOS's Files and Folders privacy, under which
+    /// Search's own check passes while WebKit's write fails (idea 1324), and
+    /// for the save panel's answer: no panel comes up in a test.
+    static var checksFolderForTest: ((URL) -> Bool)?
+    /// Downloads refused while the question after a refusal is up.
+    private static var waitingAfterRefusal: [(Browser, FetchEntry)]?
+    static var picksForTest: ((String) -> URL?)?
+
     /// The save panel, opened at the downloads folder. Nil when cancelled.
     private func askWhere(_ name: String) -> URL? {
         let name = Browser.fileName(name)
+        if let pick = Browser.picksForTest { return pick(name) }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = name
         panel.directoryURL = downloadsFolder
@@ -10607,9 +10696,85 @@ extension Browser: WKDownloadDelegate {
         didFailWithError error: Error,
         resumeData: Data?
     ) {
+        let entry = fetches.entry(for: download)
         guard let ended = fetches.fail(download, error: error, resumeData: resumeData) else { return }
         ended.owner.relinquish(download)
+        if let entry, Browser.movesAfterRefusal(entry, error) {
+            entry.askedAfterRefusal = true
+            DispatchQueue.main.async { [weak self] in self?.moveAfterRefusal(entry) }
+            return
+        }
         if ended.announceFailure { announce("Download failed") }
+    }
+
+    /// A download the downloads folder refused before a byte was written
+    /// (idea 1324): macOS can keep WebKit out of Downloads — "Don't Allow"
+    /// at its prompt — though the check before it passed, and every download
+    /// then failed at once with "Cannot create file". Asked where instead,
+    /// once, as idea 860 meant to.
+    static func movesAfterRefusal(_ entry: FetchEntry, _ error: Error) -> Bool {
+        entry.inDefaultFolder && !entry.askedAfterRefusal && entry.completedBytes == 0
+            && entry.canRetry && FetchEntry.refusedByFolder(error)
+    }
+
+    /// Into the folder picked after a refusal, the same file name asked for;
+    /// that folder is kept as the downloads folder, so the next ones go there
+    /// and the others that failed with it follow without asking again.
+    private func moveAfterRefusal(_ entry: FetchEntry) {
+        guard entry.state == .failed, let refused = entry.destination?.deletingLastPathComponent() else { return }
+        let target: URL
+        if downloadsFolder.standardizedFileURL != refused.standardizedFileURL, Browser.canWrite(in: downloadsFolder) {
+            // Not a name another download is about to write: refused together,
+            // they all come here at once, before any file is made.
+            let taken = Set(fetches.entries.compactMap { $0 === entry ? nil : $0.destination?.standardizedFileURL.path })
+            var name = entry.retryName
+            var file = Self.free(name, in: downloadsFolder)
+            var n = 2
+            while taken.contains(file.standardizedFileURL.path) {
+                let stem = (entry.retryName as NSString).deletingPathExtension
+                let ext = (entry.retryName as NSString).pathExtension
+                name = ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)"
+                file = Self.free(name, in: downloadsFolder)
+                n += 1
+            }
+            target = file
+        } else {
+            // One question at a time: those that fail while it is up wait
+            // for its answer, and follow the folder picked.
+            if Browser.waitingAfterRefusal != nil {
+                Browser.waitingAfterRefusal?.append((self, entry))
+                return
+            }
+            Browser.waitingAfterRefusal = []
+            let picked = askWhere(entry.retryName)
+            let waiting = Browser.waitingAfterRefusal ?? []
+            Browser.waitingAfterRefusal = nil
+            guard let picked else {
+                announce("Download failed")
+                return
+            }
+            keepDownloadsFolder(picked.deletingLastPathComponent(), for: refused)
+            target = picked
+            defer { for (browser, other) in waiting { browser.moveAfterRefusal(other) } }
+        }
+        entry.retryName = target.lastPathComponent
+        guard let operation = fetches.beginRetry(entry, destination: { target }),
+              let request = operation.request else { return }
+        operation.webView.startDownload(using: request) { download in
+            self.continueDownload(download, operation)
+        }
+    }
+
+    /// The folder you picked in place of one that refused, kept where the
+    /// refused one was set: the space's own, or Settings' downloads folder.
+    private func keepDownloadsFolder(_ folder: URL, for refused: URL) {
+        guard folder.standardizedFileURL != refused.standardizedFileURL,
+              downloadsFolder.standardizedFileURL == refused.standardizedFileURL else { return }
+        if prefs.usesSpaces, space.downloads != nil {
+            setSpaceDownloads(space.id, to: folder)
+        } else {
+            prefs.downloads = folder
+        }
     }
 
     /// Whether a file can be made in `folder`, made first if missing: tried
